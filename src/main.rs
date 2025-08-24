@@ -1655,6 +1655,8 @@ fn parse_move(input: &str) -> Result<((usize, usize), (usize, usize)), &'static 
 
 use eframe::egui::{self, ViewportBuilder};
 use eframe::egui::{FontData, FontDefinitions, FontFamily};
+use eframe::egui::{Color32, Stroke, FontId, Align2, RichText};
+use std::f32::consts::PI;
 fn main() -> eframe::Result<()> {
 
     let options = eframe::NativeOptions {
@@ -1702,6 +1704,7 @@ struct WudaoApp {
     game_over: bool,
     show_help: bool,
     input_mode: InputMode,
+    time: f32, // 用于动画效果的时间变量
 }
 
 #[derive(PartialEq)]
@@ -1721,6 +1724,7 @@ impl WudaoApp {
             game_over: false,
             show_help: true,
             input_mode: InputMode::Placement,
+            time: 0.0,
         }
     }
     
@@ -1817,184 +1821,311 @@ impl WudaoApp {
     }
 }
     
-  fn draw_board(&mut self, ui: &mut egui::Ui) {
-    let cell_size = 40.0;
-    let padding = cell_size / 2.0; // 添加边距，确保边界上的棋子完整显示
-    let board_size = cell_size * 4.0 + padding * 2.0; // 4个间隔，5个交叉点，加上边距
-    
-    // 创建棋盘画布
-    let (response, painter) = ui.allocate_painter(
-        egui::vec2(board_size, board_size),
-        egui::Sense::click()
-    );
-    
-    // 绘制棋盘背景
-    let rect = response.rect;
-    painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(210, 180, 140));
-    
-    // 绘制网格线 - 5x5交叉点需要4x4的网格
-    for i in 0..5 {
-        let x = rect.left() + padding + i as f32 * cell_size;
-        painter.line_segment(
-            [egui::pos2(x, rect.top() + padding), egui::pos2(x, rect.bottom() - padding)],
-            egui::Stroke::new(1.0, egui::Color32::BLACK)
+    // 修改 draw_board 方法，添加 time 参数
+    fn draw_board(&mut self, ui: &mut egui::Ui, time: f32) {
+        let cell_size = 50.0;
+        let padding = 30.0;
+        let board_size = cell_size * 4.0 + padding * 2.0;
+        
+        // 创建棋盘画布
+        let (response, painter) = ui.allocate_painter(
+            egui::vec2(board_size, board_size),
+            egui::Sense::click()
         );
         
-        let y = rect.top() + padding + i as f32 * cell_size;
-        painter.line_segment(
-            [egui::pos2(rect.left() + padding, y), egui::pos2(rect.right() - padding, y)],
-            egui::Stroke::new(1.0, egui::Color32::BLACK)
-        );
-    }
-    
-    // 绘制坐标
-    for i in 0..5 {
-        let x = rect.left() + padding + i as f32 * cell_size;
-        painter.text(
-            egui::pos2(x, rect.top() + padding - 15.0),
-            egui::Align2::CENTER_CENTER,
-            &i.to_string(),
-            egui::FontId::default(),
-            egui::Color32::BLACK
-        );
+        let rect = response.rect;
         
-        let y = rect.top() + padding + i as f32 * cell_size;
-        painter.text(
-            egui::pos2(rect.left() + padding - 15.0, y),
-            egui::Align2::CENTER_CENTER,
-            &i.to_string(),
-            egui::FontId::default(),
-            egui::Color32::BLACK
-        );
-    }
-    
-    // 绘制棋子 - 放在交叉点上
-    for row in 0..5 {
-        for col in 0..5 {
-            let x = rect.left() + padding + col as f32 * cell_size;
-            let y = rect.top() + padding + row as f32 * cell_size;
-            let center = egui::pos2(x, y);
+        // 绘制木质棋盘背景
+        painter.rect_filled(rect, 5.0, Color32::from_rgb(188, 143, 101));
+        
+        // 绘制棋盘网格线
+        for i in 0..5 {
+            let x = rect.left() + padding + i as f32 * cell_size;
+            painter.line_segment(
+                [egui::pos2(x, rect.top() + padding), egui::pos2(x, rect.bottom() - padding)],
+                Stroke::new(2.0, Color32::from_rgb(80, 50, 20))
+            );
             
-            match self.board.grid[row][col] {
-                Cell::Occupied(Player::Black) => {
-                    painter.circle_filled(center, cell_size / 3.0, egui::Color32::BLACK);
+            let y = rect.top() + padding + i as f32 * cell_size;
+            painter.line_segment(
+                [egui::pos2(rect.left() + padding, y), egui::pos2(rect.right() - padding, y)],
+                Stroke::new(2.0, Color32::from_rgb(80, 50, 20))
+            );
+        }
+        
+        // 绘制坐标
+        for i in 0..5 {
+            let x = rect.left() + padding + i as f32 * cell_size;
+            painter.text(
+                egui::pos2(x, rect.top() + padding - 20.0),
+                Align2::CENTER_CENTER,
+                &i.to_string(),
+                FontId::proportional(16.0),
+                Color32::from_rgb(50, 30, 10)
+            );
+            
+            let y = rect.top() + padding + i as f32 * cell_size;
+            painter.text(
+                egui::pos2(rect.left() + padding - 20.0, y),
+                Align2::CENTER_CENTER,
+                &i.to_string(),
+                FontId::proportional(16.0),
+                Color32::from_rgb(50, 30, 10)
+            );
+        }
+        
+        // 绘制棋子
+        for row in 0..5 {
+            for col in 0..5 {
+                let x = rect.left() + padding + col as f32 * cell_size;
+                let y = rect.top() + padding + row as f32 * cell_size;
+                let center = egui::pos2(x, y);
+                
+                match self.board.grid[row][col] {
+                    Cell::Occupied(Player::Black) => {
+                        // 绘制黑色棋子（带有光泽效果）
+                        painter.circle_filled(center, cell_size / 3.0, Color32::from_rgb(40, 40, 40));
+                        painter.circle_filled(center, cell_size / 3.5, Color32::from_rgb(20, 20, 20));
+                        
+                        // 添加高光
+                        let highlight_pos = egui::pos2(x - cell_size/8.0, y - cell_size/8.0);
+                        painter.circle_filled(highlight_pos, cell_size / 10.0, Color32::from_rgba_premultiplied(255, 255, 255, 100));
+                    }
+                    Cell::Occupied(Player::White) => {
+                        // 绘制白色棋子（带有阴影效果）
+                        painter.circle_filled(center, cell_size / 3.0, Color32::from_rgb(230, 230, 230));
+                        painter.circle_stroke(center, cell_size / 3.0, Stroke::new(1.5, Color32::from_rgb(100, 100, 100)));
+                        
+                        // 添加阴影
+                        let shadow_pos = egui::pos2(x + cell_size/10.0, y + cell_size/10.0);
+                        painter.circle_filled(shadow_pos, cell_size / 3.1, Color32::from_rgba_premultiplied(0, 0, 0, 40));
+                    }
+                    Cell::Empty => {
+                        // 在空位添加浅色圆点提示
+                        painter.circle_filled(center, 3.0, Color32::from_rgba_premultiplied(0, 0, 0, 50));
+                    }
                 }
-                Cell::Occupied(Player::White) => {
-                    painter.circle_filled(center, cell_size / 3.0, egui::Color32::WHITE);
-                    painter.circle_stroke(center, cell_size / 3.0, egui::Stroke::new(1.0, egui::Color32::BLACK));
+                
+                // 高亮显示受保护的棋子
+                let is_protected = if let Cell::Occupied(player) = self.board.grid[row][col] {
+                    self.board.reward_pieces
+                        .get(&player)
+                        .map_or(false, |protected| protected.contains(&(row, col)))
+                } else {
+                    false
+                };
+                
+                if is_protected {
+                    painter.circle_stroke(center, cell_size / 2.8, Stroke::new(2.5, Color32::GOLD));
+                    
+                    // 添加保护标记（皇冠图标）
+                    let crown_points = [
+                        egui::pos2(x - 5.0, y - 3.0),
+                        egui::pos2(x - 3.0, y - 7.0),
+                        egui::pos2(x, y - 5.0),
+                        egui::pos2(x + 3.0, y - 7.0),
+                        egui::pos2(x + 5.0, y - 3.0),
+                    ];
+                    painter.add(eframe::egui::Shape::line(
+                        crown_points.to_vec(),
+                        Stroke::new(1.5, Color32::GOLD)
+                    ));
                 }
-                Cell::Empty => {}
+                
+                // 高亮显示选中的棋子
+                if self.selected_cell == Some((row, col)) {
+                    painter.circle_stroke(center, cell_size / 2.8, Stroke::new(3.0, Color32::from_rgb(0, 150, 255)));
+                    
+                    // 添加脉动动画效果
+                    let pulse = (time * 5.0).sin() * 2.0 + 2.0;
+                    painter.circle_stroke(center, cell_size / 2.8 + pulse, Stroke::new(1.0, Color32::from_rgba_premultiplied(0, 150, 255, 100)));
+                }
+                
+                // 高亮显示可移动的位置（在移动阶段）
+                if self.input_mode == InputMode::MovementTo {
+                    if let Some((from_row, from_col)) = self.selected_cell {
+                        let row_diff = from_row.abs_diff(row);
+                        let col_diff = from_col.abs_diff(col);
+                        let is_adjacent = (row_diff == 1 && col_diff == 0) || (row_diff == 0 && col_diff == 1);
+                        
+                        if is_adjacent && self.board.grid[row][col] == Cell::Empty {
+                            painter.circle_filled(center, 8.0, Color32::from_rgba_premultiplied(0, 255, 0, 100));
+                        }
+                    }
+                }
             }
-            
-            // 高亮显示受保护的棋子
-            let is_protected = if let Cell::Occupied(player) = self.board.grid[row][col] {
-                self.board.reward_pieces
-                    .get(&player)
-                    .map_or(false, |protected| protected.contains(&(row, col)))
-            } else {
-                false
-            };
-            
-            if is_protected {
-                painter.circle_stroke(center, cell_size / 2.8, egui::Stroke::new(2.0, egui::Color32::GOLD));
-            }
-            
-            // 高亮显示选中的棋子
-            if self.selected_cell == Some((row, col)) {
-                painter.circle_stroke(center, cell_size / 2.8, egui::Stroke::new(2.0, egui::Color32::BLUE));
+        }
+        
+        // 处理点击事件
+        if response.clicked() {
+            if let Some(pos) = response.interact_pointer_pos() {
+                let col = ((pos.x - rect.left() - padding + cell_size / 2.0) / cell_size) as usize;
+                let row = ((pos.y - rect.top() - padding + cell_size / 2.0) / cell_size) as usize;
+                
+                if row < 5 && col < 5 {
+                    self.handle_cell_click(row, col);
+                }
             }
         }
     }
-    
-    // 处理点击事件 - 点击交叉点
-    if response.clicked() {
-        if let Some(pos) = response.interact_pointer_pos() {
-            // 计算点击的交叉点坐标
-            let col = ((pos.x - rect.left() - padding + cell_size / 2.0) / cell_size) as usize;
-            let row = ((pos.y - rect.top() - padding + cell_size / 2.0) / cell_size) as usize;
-            
-            if row < 5 && col < 5 {
-                // 添加点击反馈
-                self.message = format!("点击位置: ({}, {})", row, col);
-                self.handle_cell_click(row, col);
-            }
-        }
-    }
-}
 }
 
+// 更新 WudaoApp 的 update 方法
 impl eframe::App for WudaoApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // 更新时间用于动画
+        self.time += ctx.input(|i| i.unstable_dt);
+        
+        // 设置窗口背景色
+        ctx.set_visuals(eframe::egui::Visuals {
+            window_fill: Color32::from_rgb(245, 235, 220),
+            panel_fill: Color32::from_rgb(245, 235, 220),
+            ..Default::default()
+        });
+        
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("五道方游戏");
+            ui.heading(RichText::new("五道方游戏").color(Color32::from_rgb(120, 70, 30)).font(FontId::proportional(28.0)));
             
-            // 帮助提示
-            if self.show_help {
-                ui.collapsing("游戏规则", |ui| {
-                    ui.label("1. 游戏分为三个阶段: 落子阶段、吃棋阶段、走子阶段");
-                    ui.label("2. 落子阶段: 玩家轮流在5x5棋盘上放置棋子");
-                    ui.label("3. 形成特定模式可获得奖励: 成方(+1子)、成三斜(+1子)、成四斜(+1子)、成州(+2子)、成龙(+2子)");
-                    ui.label("4. 棋盘满后进入吃棋阶段: 后落子的玩家先吃棋，轮流吃掉对方棋子");
-                    ui.label("5. 吃棋完成后进入走子阶段: 玩家轮流移动自己的棋子");
-                    ui.label("6. 胜利条件: 对方棋子少于3个或无法移动时获胜");
-                });
-            }
-            
-            // 游戏状态显示
+            // 游戏状态显示区域
+            ui.add_space(10.0);
             let (phase, player) = self.board.get_state();
+            
+            // 创建状态面板
+            egui::Frame::group(ui.style())
+                .fill(Color32::from_rgb(250, 245, 235))
+                .stroke(Stroke::new(1.0, Color32::from_rgb(180, 150, 120)))
+                .rounding(5.0)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("当前阶段:").font(FontId::proportional(16.0)).color(Color32::from_rgb(100, 60, 20)));
+                        ui.label(RichText::new(format!("{}", phase)).font(FontId::proportional(16.0)).color(Color32::from_rgb(80, 40, 10)));
+                        
+                        ui.add_space(20.0);
+                        
+                        ui.label(RichText::new("当前玩家:").font(FontId::proportional(16.0)).color(Color32::from_rgb(100, 60, 20)));
+                        ui.label(RichText::new(format!("{}", player)).font(FontId::proportional(16.0)).color(match player {
+                            Player::Black => Color32::BLACK,
+                            Player::White => Color32::from_rgb(80, 80, 80),
+                        }));
+                    });
+                    
+                    // 显示额外的游戏状态信息
+                    match phase {
+                        GamePhase::Placement if self.board.extra_moves > 0 => {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("额外落子次数:").font(FontId::proportional(14.0)));
+                                ui.label(RichText::new(format!("{}", self.board.extra_moves)).font(FontId::proportional(14.0)).color(Color32::DARK_GREEN));
+                            });
+                        }
+                        GamePhase::Capture => {
+                            let remaining = self.board.capture_remaining
+                                .get(&player)
+                                .copied()
+                                .unwrap_or(0);
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("剩余吃子数量:").font(FontId::proportional(14.0)));
+                                ui.label(RichText::new(format!("{}", remaining)).font(FontId::proportional(14.0)).color(Color32::DARK_RED));
+                            });
+                        }
+                        GamePhase::Movement => {
+                            if self.input_mode == InputMode::MovementFrom {
+                                ui.label(RichText::new("请选择要移动的棋子").font(FontId::proportional(14.0)).color(Color32::DARK_BLUE));
+                            } else if self.input_mode == InputMode::MovementTo {
+                                ui.label(RichText::new("请选择目标位置").font(FontId::proportional(14.0)).color(Color32::DARK_BLUE));
+                            }
+                        }
+                        _ => {}
+                    }
+                });
+            
+            ui.add_space(10.0);
+            
+            // 操作按钮区域
             ui.horizontal(|ui| {
-                ui.label(format!("当前阶段: {}", phase));
-                ui.label(format!("当前玩家: {}", player));
-                
-                if ui.button("隐藏/显示帮助").clicked() {
+                if ui.button(RichText::new("游戏规则").font(FontId::proportional(14.0))).clicked() {
                     self.show_help = !self.show_help;
                 }
                 
-                if ui.button("认输").clicked() {
+                if ui.button(RichText::new("认输").font(FontId::proportional(14.0))).clicked() {
                     self.message = format!("{} 认输，游戏结束！", player);
                     self.game_over = true;
                 }
                 
-                if ui.button("新游戏").clicked() {
+                if ui.button(RichText::new("新游戏").font(FontId::proportional(14.0))).clicked() {
                     *self = Self::new();
+                }
+                
+                // 添加撤销按钮（如果支持的话）
+                if ui.button(RichText::new("悔棋").font(FontId::proportional(14.0))).clicked() {
+                    self.message = "悔棋功能尚未实现".to_string();
                 }
             });
             
-            // 显示额外的游戏状态信息
-            if let GamePhase::Placement = phase {
-                if self.board.extra_moves > 0 {
-                    ui.label(format!("额外落子次数: {}", self.board.extra_moves));
-                }
-            } else if let GamePhase::Capture = phase {
-                let remaining = self.board.capture_remaining
-                    .get(&player)
-                    .copied()
-                    .unwrap_or(0);
-                ui.label(format!("剩余吃子数量: {}", remaining));
-            } else if let GamePhase::Movement = phase {
-             // 修复模式匹配
-                if self.input_mode == InputMode::MovementFrom {
-                    ui.label("请选择要移动的棋子");
-                } else if self.input_mode == InputMode::MovementTo {
-                    ui.label("请选择目标位置");
-                }
+            ui.add_space(10.0);
+            
+            // 帮助提示
+            if self.show_help {
+                egui::Frame::group(ui.style())
+                    .fill(Color32::from_rgba_premultiplied(255, 255, 240, 200))
+                    .stroke(Stroke::new(1.0, Color32::from_rgb(220, 200, 100)))
+                    .rounding(5.0)
+                    .show(ui, |ui| {
+                        ui.collapsing(RichText::new("游戏规则").font(FontId::proportional(16.0)).color(Color32::from_rgb(120, 70, 30)), |ui| {
+                            ui.label(RichText::new("• 游戏分为三个阶段: 落子阶段、吃棋阶段、走子阶段").font(FontId::proportional(14.0)));
+                            ui.label(RichText::new("• 落子阶段: 玩家轮流在5x5棋盘上放置棋子").font(FontId::proportional(14.0)));
+                            ui.label(RichText::new("• 形成特定模式可获得奖励: 成方(+1子)、成三斜(+1子)、成四斜(+1子)、成州(+2子)、成龙(+2子)").font(FontId::proportional(14.0)));
+                            ui.label(RichText::new("• 棋盘满后进入吃棋阶段: 后落子的玩家先吃棋，轮流吃掉对方棋子").font(FontId::proportional(14.0)));
+                            ui.label(RichText::new("• 吃棋完成后进入走子阶段: 玩家轮流移动自己的棋子").font(FontId::proportional(14.0)));
+                            ui.label(RichText::new("• 胜利条件: 对方棋子少于3个或无法移动时获胜").font(FontId::proportional(14.0)));
+                        });
+                    });
             }
+            
+            ui.add_space(10.0);
             
             // 显示消息
             if !self.message.is_empty() {
-                ui.label(&self.message);
+                egui::Frame::group(ui.style())
+                    .fill(Color32::from_rgba_premultiplied(240, 248, 255, 200))
+                    .stroke(Stroke::new(1.0, Color32::from_rgb(150, 180, 220)))
+                    .rounding(5.0)
+                    .show(ui, |ui| {
+                        ui.label(RichText::new(&self.message).font(FontId::proportional(14.0)).color(Color32::from_rgb(50, 80, 120)));
+                    });
             }
+            
+            ui.add_space(10.0);
             
             // 检查游戏是否结束
             if self.game_over {
-                ui.heading("游戏结束!");
+                ui.heading(RichText::new("游戏结束!").color(Color32::from_rgb(180, 40, 40)).font(FontId::proportional(24.0)));
                 return;
             }
             
             // 显示棋盘
             ui.vertical_centered(|ui| {
-                self.draw_board(ui);
+                self.draw_board(ui, self.time);
+            });
+            
+            // 添加玩家提示
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("●").color(Color32::BLACK).font(FontId::proportional(20.0)));
+                ui.label(RichText::new("黑方").font(FontId::proportional(14.0)));
+                
+                ui.add_space(20.0);
+                
+                ui.label(RichText::new("○").color(Color32::from_rgb(80, 80, 80)).font(FontId::proportional(20.0)));
+                ui.label(RichText::new("白方").font(FontId::proportional(14.0)));
+                
+                ui.add_space(20.0);
+                
+                ui.label(RichText::new("⛁").color(Color32::GOLD).font(FontId::proportional(20.0)));
+                ui.label(RichText::new("受保护棋子").font(FontId::proportional(14.0)));
             });
         });
+        
+        // 请求持续重绘以实现动画效果
+        ctx.request_repaint();
     }
 }
