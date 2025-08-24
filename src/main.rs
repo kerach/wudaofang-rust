@@ -140,7 +140,17 @@ pub struct Board {
     reward_pieces: HashMap<Player, HashSet<(usize, usize)>>,
     // 游戏记录
     game_record: Vec<GameAction>,
+    movement_phase_origin: MovementPhaseOrigin, // 添加这个字段
 }
+
+// 添加枚举来标识进入移动阶段的方式
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+pub enum MovementPhaseOrigin {
+    FromPlacement, // 从落子阶段进入（满盘后）
+    FromCapture,   // 从吃棋阶段进入
+    FromMovement,  // 从移动阶段自身进入（如吃棋后返回）
+}
+
 
 impl Board {
     pub fn new() -> Self {
@@ -159,6 +169,7 @@ impl Board {
             triggered_dragons: HashSet::new(),
             reward_pieces: HashMap::new(),
             game_record: Vec::new(),
+            movement_phase_origin: MovementPhaseOrigin::FromPlacement, // 默认从落子阶段进入
         };
 
         // 初始化奖励棋子保护集
@@ -373,56 +384,57 @@ impl Board {
     fn enter_capture_phase(&mut self) {
         self.phase = GamePhase::Capture;
 
-        // 重置奖励模式记录并重新计算
-        self.triggered_squares.clear();
-        self.triggered_tris.clear();
-        self.triggered_tetras.clear();
-        self.triggered_rows.clear();
-        self.triggered_cols.clear();
-        self.triggered_dragons.clear();
+     // 重置奖励模式记录并重新计算
+    self.triggered_squares.clear();
+    self.triggered_tris.clear();
+    self.triggered_tetras.clear();
+    self.triggered_rows.clear();
+    self.triggered_cols.clear();
+    self.triggered_dragons.clear();
 
-        self.scan_all_rewards();
+    self.scan_all_rewards();
 
-        // 设置吃棋顺序：后落子的玩家先吃棋
-        let last_player = self.current_player.opponent();
-        let first_player = last_player; // 后落子的玩家先吃棋
-        let second_player = last_player.opponent(); // 先落子的玩家后吃棋
 
-        // 计算吃子数量并检查是否有可吃的棋子
-        let first_capture = self.calculate_capture_count(first_player);
-        let second_capture = self.calculate_capture_count(second_player);
+        // 设置吃棋顺序：第二个落子的玩家（白方）先吃棋
+    let first_player = Player::White; // 白方是先吃玩家
+    let second_player = Player::Black; // 黑方是后吃玩家
 
-        // 检查第一个玩家是否有可吃的棋子
-        let first_has_capturable = self.has_capturable_pieces(second_player);
-        let second_has_capturable = self.has_capturable_pieces(first_player);
 
-        self.capture_remaining = HashMap::new();
+      // 重置吃子数量为0，与落子阶段无关
+    self.capture_remaining = HashMap::new();
+    self.capture_remaining.insert(first_player, 0);
+    self.capture_remaining.insert(second_player, 0);
+
+    // 检查是否有可吃的棋子
+    let first_has_capturable = self.has_capturable_pieces(second_player);
+    let second_has_capturable = self.has_capturable_pieces(first_player);
+
 
         // 只有当玩家有可吃棋子时才设置吃棋数量
-        if first_has_capturable {
-            self.capture_remaining.insert(first_player, first_capture);
-        } else {
-            self.capture_remaining.insert(first_player, 0);
-        }
+    if first_has_capturable {
+        self.capture_remaining.insert(first_player, 1);
+    } else {
+        self.capture_remaining.insert(first_player, 0);
+    }
 
-        if second_has_capturable {
-            self.capture_remaining.insert(second_player, second_capture);
-        } else {
-            self.capture_remaining.insert(second_player, 0);
-        }
+    if second_has_capturable {
+        self.capture_remaining.insert(second_player, 1);
+    } else {
+        self.capture_remaining.insert(second_player, 0);
+    }
 
-        // 设置第一个有可吃棋子的玩家为当前玩家
-        if first_has_capturable {
-            self.current_player = first_player;
-            self.capture_turn = first_player;
-        } else if second_has_capturable {
-            self.current_player = second_player;
-            self.capture_turn = second_player;
-        } else {
-            // 如果都没有可吃的棋子，直接进入移动阶段
-            self.enter_movement_phase();
-            return;
-        }
+         // 设置第一个有可吃棋子的玩家为当前玩家
+    if first_has_capturable {
+        self.current_player = first_player;
+        self.capture_turn = first_player;
+    } else if second_has_capturable {
+        self.current_player = second_player;
+        self.capture_turn = second_player;
+    } else {
+        // 如果都没有可吃的棋子，直接进入移动阶段
+        self.enter_movement_phase(MovementPhaseOrigin::FromPlacement);
+        return;
+    }
     }
 
     // 检查是否有可吃的棋子
@@ -694,34 +706,43 @@ impl Board {
         // 更新吃棋剩余数量
         *self.capture_remaining.get_mut(&player).unwrap() = remaining - 1;
 
+        
+
         // 更新奖励棋子保护集
         self.update_reward_pieces();
 
         // 检查吃棋后状态
         if self.capture_remaining.values().sum::<u32>() == 0 {
-            // 所有吃棋完成，进入移动阶段
-            self.enter_movement_phase();
-            return Ok(());
+    // 所有吃棋完成，进入移动阶段
+    self.enter_movement_phase(MovementPhaseOrigin::FromMovement);
+    return Ok(());
         }
+
+           // 如果当前玩家还有吃子机会，不切换玩家
+    if self.capture_remaining.get(&player).copied().unwrap_or(0) > 0 {
+        return Ok(());
+    }
 
         // 切换到下一个吃棋玩家
         let next_player = player.opponent();
 
         // 如果下一个玩家没有可吃的棋子，则跳过
-        if self.player_pieces(opponent).is_empty() {
-            *self.capture_remaining.get_mut(&next_player).unwrap() = 0;
+// 检查下一个玩家是否有可吃的棋子
+let next_has_capturable = self.has_capturable_pieces(next_player.opponent());
 
-            // 检查是否所有玩家都完成吃棋
-            if self.capture_remaining.values().sum::<u32>() == 0 {
-                self.enter_movement_phase();
-                return Ok(());
-            } else {
-                self.current_player = next_player.opponent();
-                return Ok(());
-            }
-        } else {
-            self.current_player = next_player;
-        }
+if !next_has_capturable {
+    // 如果下一个玩家没有可吃的棋子，检查是否所有玩家都完成吃棋
+    if self.capture_remaining.values().sum::<u32>() == 0 {
+        self.enter_movement_phase(MovementPhaseOrigin::FromCapture);
+        return Ok(());
+    } else {
+        // 跳过这个玩家，回到第一个吃棋玩家
+        self.current_player = self.capture_turn;
+        return Ok(());
+    }
+}
+
+self.current_player = next_player;
 
         // 检查后吃棋责任
         if player == self.capture_turn.opponent() {
@@ -735,14 +756,213 @@ impl Board {
     }
 
     // 进入移动阶段
-    fn enter_movement_phase(&mut self) {
-        self.phase = GamePhase::Movement;
-        // 移动阶段的先手是吃棋阶段的后吃棋玩家
-        if let Some((last_capture_player, _)) = self.capture_remaining.iter().last() {
-            self.current_player = *last_capture_player;
+fn enter_movement_phase(&mut self, origin: MovementPhaseOrigin) {
+    self.phase = GamePhase::Movement;
+    self.movement_phase_origin = origin;
+    
+    match origin {
+        MovementPhaseOrigin::FromPlacement => {
+            // 从满盘进入移动阶段，白方先走
+            self.current_player = Player::White;
         }
-        self.update_reward_pieces();
+        MovementPhaseOrigin::FromCapture => {
+            // 从吃棋阶段进入移动阶段，保持当前玩家不变
+            // 不需要改变current_player
+        }
+        MovementPhaseOrigin::FromMovement => {
+            // 从移动阶段自身进入（如吃棋后返回），切换玩家
+            self.current_player = self.current_player.opponent();
+        }
     }
+    
+    self.update_reward_pieces();
+}
+
+// 添加新的奖励检查方法，专门用于走棋阶段
+fn check_rewards_after_move(&mut self, row: usize, col: usize) -> u32 {
+    let player = self.current_player;
+    let mut capture_count = 0;
+    
+    // 只检查与移动棋子相关的奖励模式
+    // 1. 检查成方 (1x1 正方形)
+    let squares = self.check_squares_after_move(row, col, player);
+    capture_count += squares;
+    
+    // 2. 检查成三斜 (3点斜线)
+    let tris = self.check_tris_after_move(row, col, player);
+    capture_count += tris;
+    
+    // 3. 检查成四斜 (4点斜线)
+    let tetras = self.check_tetras_after_move(row, col, player);
+    capture_count += tetras;
+    
+    // 4. 检查成州 (整行或整列)
+    let rows = self.check_rows_after_move(row, player);
+    capture_count += rows;
+    
+    let cols = self.check_cols_after_move(col, player);
+    capture_count += cols;
+    
+    // 5. 检查成龙 (对角线)
+    let dragons = self.check_dragons_after_move(row, col, player);
+    capture_count += dragons;
+    
+    capture_count
+}
+
+// 添加走棋阶段专用的奖励检查方法
+fn check_squares_after_move(&mut self, row: usize, col: usize, player: Player) -> u32 {
+    let mut extra = 0;
+    
+    // 检查可能包含该点的所有正方形
+    for &(r, c) in &[
+        (row, col),
+        (row, col.saturating_sub(1)),
+        (row.saturating_sub(1), col),
+        (row.saturating_sub(1), col.saturating_sub(1)),
+    ] {
+        if r < 4 && c < 4 {
+            if self.is_square(r, c, player) && !self.triggered_squares.contains(&[r, c]) {
+                self.triggered_squares.insert([r, c]);
+                extra += 1;
+                
+                // 记录奖励模式
+                self.record_action(GameAction::Reward {
+                    player,
+                    pattern: RewardPattern::Square { top_left: (r, c) },
+                });
+            }
+        }
+    }
+    extra
+}
+
+fn check_tris_after_move(&mut self, row: usize, col: usize, player: Player) -> u32 {
+    let mut extra = 0;
+    
+    for id in 0..4 {
+        if self.is_tri_affected_by_move(id, row, col, player) && 
+           self.is_tri(id, player) && 
+           !self.triggered_tris.contains(&id) {
+            self.triggered_tris.insert(id);
+            extra += 1;
+            
+            // 记录奖励模式
+            self.record_action(GameAction::Reward {
+                player,
+                pattern: RewardPattern::Tri { id },
+            });
+        }
+    }
+    extra
+}
+
+fn check_tetras_after_move(&mut self, row: usize, col: usize, player: Player) -> u32 {
+    let mut extra = 0;
+    
+    for id in 0..4 {
+        if self.is_tetra_affected_by_move(id, row, col, player) && 
+           self.is_tetra(id, player) && 
+           !self.triggered_tetras.contains(&id) {
+            self.triggered_tetras.insert(id);
+            extra += 1;
+            
+            // 记录奖励模式
+            self.record_action(GameAction::Reward {
+                player,
+                pattern: RewardPattern::Tetra { id },
+            });
+        }
+    }
+    extra
+}
+
+fn check_rows_after_move(&mut self, row: usize, player: Player) -> u32 {
+    if self.is_row(row, player) && !self.triggered_rows.contains(&row) {
+        self.triggered_rows.insert(row);
+        
+        // 记录奖励模式
+        self.record_action(GameAction::Reward {
+            player,
+            pattern: RewardPattern::Row { index: row },
+        });
+        
+        2 // 成州奖励2次吃子机会
+    } else {
+        0
+    }
+}
+
+fn check_cols_after_move(&mut self, col: usize, player: Player) -> u32 {
+    if self.is_col(col, player) && !self.triggered_cols.contains(&col) {
+        self.triggered_cols.insert(col);
+        
+        // 记录奖励模式
+        self.record_action(GameAction::Reward {
+            player,
+            pattern: RewardPattern::Col { index: col },
+        });
+        
+        2 // 成州奖励2次吃子机会
+    } else {
+        0
+    }
+}
+
+fn check_dragons_after_move(&mut self, row: usize, col: usize, player: Player) -> u32 {
+    let mut extra = 0;
+    
+    for id in 0..2 {
+        if self.is_dragon_affected_by_move(id, row, col, player) && 
+           self.is_dragon(id, player) && 
+           !self.triggered_dragons.contains(&id) {
+            self.triggered_dragons.insert(id);
+            extra += 2; // 成龙奖励2次吃子机会
+            
+            // 记录奖励模式
+            self.record_action(GameAction::Reward {
+                player,
+                pattern: RewardPattern::Dragon { id },
+            });
+        }
+    }
+    extra
+}
+
+// 添加辅助方法检查移动是否影响特定模式
+fn is_tri_affected_by_move(&self, id: usize, row: usize, col: usize, player: Player) -> bool {
+    let positions = match id {
+        0 => vec![(0, 2), (1, 1), (2, 0)], // 左上三斜
+        1 => vec![(0, 2), (1, 3), (2, 4)], // 右上三斜
+        2 => vec![(2, 0), (3, 1), (4, 2)], // 左下三斜
+        3 => vec![(2, 4), (3, 3), (4, 2)], // 右下三斜
+        _ => return false,
+    };
+    
+    positions.contains(&(row, col))
+}
+
+fn is_tetra_affected_by_move(&self, id: usize, row: usize, col: usize, player: Player) -> bool {
+    let positions = match id {
+        0 => vec![(0, 1), (1, 2), (2, 3), (3, 4)], // 左上四斜
+        1 => vec![(0, 3), (1, 2), (2, 1), (3, 0)], // 右上四斜
+        2 => vec![(1, 0), (2, 1), (3, 2), (4, 3)], // 左下四斜
+        3 => vec![(1, 4), (2, 3), (3, 2), (4, 1)], // 右下四斜
+        _ => return false,
+    };
+    
+    positions.contains(&(row, col))
+}
+
+fn is_dragon_affected_by_move(&self, id: usize, row: usize, col: usize, player: Player) -> bool {
+    let positions = match id {
+        0 => vec![(0, 0), (1, 1), (2, 2), (3, 3), (4, 4)], // 主对角线
+        1 => vec![(0, 4), (1, 3), (2, 2), (3, 1), (4, 0)], // 副对角线
+        _ => return false,
+    };
+    
+    positions.contains(&(row, col))
+}
 
     // 执行移动
     pub fn move_piece(
@@ -798,44 +1018,22 @@ impl Board {
         });
 
         // 检查奖励并获取可吃子数量
-        let capture_count = self.check_rewards_movement(to_row, to_col);
+       let capture_count = self.check_rewards_after_move(to_row, to_col);
 
-        // 吃子操作
-        let mut actual_captured = 0;
-        if capture_count > 0 {
-            let opponent = player.opponent();
-            let opponent_pieces = self.player_pieces(opponent);
-            let protected = self
-                .reward_pieces
-                .get(&opponent)
-                .cloned()
-                .unwrap_or_default();
 
-            // 找出可吃的棋子（不在保护集中的）
-            let mut capturable: Vec<_> = opponent_pieces
-                .into_iter()
-                .filter(|pos| !protected.contains(pos))
-                .collect();
-
-            // 吃子数量不超过可吃棋子数量
-            actual_captured = capture_count.min(capturable.len() as u32);
-
-            // 执行吃子（移除棋子）
-            for _ in 0..actual_captured {
-                if let Some(pos) = capturable.pop() {
-                    self.grid[pos.0][pos.1] = Cell::Empty;
-
-                    // 记录吃棋动作
-                    self.record_action(GameAction::Capture {
-                        player,
-                        pos: (pos.0, pos.1),
-                    });
-                }
-            }
-
-            // 更新奖励棋子保护集
-            self.update_reward_pieces();
-        }
+       // 如果有吃子机会，进入吃棋阶段让玩家选择吃哪些棋子
+    if capture_count > 0 {
+        // 设置吃棋阶段
+        self.phase = GamePhase::Capture;
+        self.capture_remaining.insert(player, capture_count);
+        self.capture_turn = player;
+        
+        // 更新奖励棋子保护集
+        self.update_reward_pieces();
+        
+        // 返回吃子数量，但不实际吃子
+        return Ok(capture_count);
+    }
 
         // 检查移动后对方是否能走棋
         let opponent = player.opponent();
@@ -847,7 +1045,7 @@ impl Board {
         // 切换玩家
         self.current_player = self.current_player.opponent();
 
-        Ok(actual_captured)
+        Ok(0)
     }
 
     // 落子阶段的奖励检查
@@ -1315,1067 +1513,488 @@ fn parse_move(input: &str) -> Result<((usize, usize), (usize, usize)), &'static 
 }
 
 // 主游戏循环
-fn main() {
-    println!("\n===== 欢迎来到五道方游戏! =====");
-    println!("游戏规则说明:");
-    println!("1. 游戏分为三个阶段: 落子阶段、吃棋阶段、走子阶段");
-    println!("2. 落子阶段: 玩家轮流在5x5棋盘上放置棋子");
-    println!(
-        "3. 形成特定模式可获得奖励: 成方(+1子)、成三斜(+1子)、成四斜(+1子)、成州(+2子)、成龙(+2子)"
-    );
-    println!("4. 棋盘满后进入吃棋阶段: 后落子的玩家先吃棋，轮流吃掉对方棋子");
-    println!("5. 吃棋完成后进入走子阶段: 玩家轮流移动自己的棋子");
-    println!("6. 胜利条件: 对方棋子少于3个或无法移动时获胜");
-    println!("================================\n");
+// fn main() {
+//     println!("\n===== 欢迎来到五道方游戏! =====");
+//     println!("游戏规则说明:");
+//     println!("1. 游戏分为三个阶段: 落子阶段、吃棋阶段、走子阶段");
+//     println!("2. 落子阶段: 玩家轮流在5x5棋盘上放置棋子");
+//     println!(
+//         "3. 形成特定模式可获得奖励: 成方(+1子)、成三斜(+1子)、成四斜(+1子)、成州(+2子)、成龙(+2子)"
+//     );
+//     println!("4. 棋盘满后进入吃棋阶段: 后落子的玩家先吃棋，轮流吃掉对方棋子");
+//     println!("5. 吃棋完成后进入走子阶段: 玩家轮流移动自己的棋子");
+//     println!("6. 胜利条件: 对方棋子少于3个或无法移动时获胜");
+//     println!("================================\n");
 
-    let mut board = Board::new();
-    let mut game_over = false;
+//     let mut board = Board::new();
+//     let mut game_over = false;
 
-    while !game_over {
-        board.print_board();
-        board.print_game_status();
+//     while !game_over {
+//         board.print_board();
+//         board.print_game_status();
 
-        // 添加AI推荐（无侵入性）
-        let recommendation = BoardAI::recommend_move(&board);
-        println!("AI推荐: {}", recommendation);
+//         // 检查胜利条件（只在吃棋和走子阶段）
+//         if let Some(winner) = board.check_winner() {
+//             println!("\n===== 游戏结束! =====");
+//             println!("{} 获胜!", winner);
+//             game_over = true;
+//             continue;
+//         }
 
-        // 检查胜利条件（只在吃棋和走子阶段）
-        if let Some(winner) = board.check_winner() {
-            println!("\n===== 游戏结束! =====");
-            println!("{} 获胜!", winner);
-            game_over = true;
-            continue;
-        }
+//         match board.phase {
+//             GamePhase::Placement => {
+//                 let input = read_input(&format!("{} 请输入落子位置: ", board.current_player));
 
-        match board.phase {
-            GamePhase::Placement => {
-                let input = read_input(&format!("{} 请输入落子位置: ", board.current_player));
+//                 if board.admit_defeat(&input) {
+//                     println!("{} 认输，游戏结束！", board.current_player);
+//                     game_over = true;
+//                     continue;
+//                 }
+//                 match parse_coord(&input) {
+//                     Ok((row, col)) => match board.place_piece(row, col) {
+//                         Ok(extra) => {
+//                             if extra > 0 {
+//                                 println!(
+//                                     "{} 形成奖励模式，获得额外落子次数: {}",
+//                                     board.current_player, extra
+//                                 );
+//                             }
+//                         }
+//                         Err(e) => println!("操作失败: {}", e),
+//                     },
+//                     Err(e) => println!("输入错误: {}", e),
+//                 }
+//             }
 
-                if board.admit_defeat(&input) {
-                    println!("{} 认输，游戏结束！", board.current_player);
-                    game_over = true;
-                    continue;
-                }
-                match parse_coord(&input) {
-                    Ok((row, col)) => match board.place_piece(row, col) {
-                        Ok(extra) => {
-                            if extra > 0 {
-                                println!(
-                                    "{} 形成奖励模式，获得额外落子次数: {}",
-                                    board.current_player, extra
-                                );
-                            }
-                        }
-                        Err(e) => println!("操作失败: {}", e),
-                    },
-                    Err(e) => println!("输入错误: {}", e),
-                }
-            }
+//             GamePhase::Capture => {
+//                 // 检查当前玩家是否可以吃子
+//                 let opponent = board.current_player.opponent();
+//                 let opponent_pieces = board.player_pieces(opponent);
+//                 let protected = board
+//                     .reward_pieces
+//                     .get(&opponent)
+//                     .cloned()
+//                     .unwrap_or_default();
 
-            GamePhase::Capture => {
-                // 检查当前玩家是否可以吃子
-                let opponent = board.current_player.opponent();
-                let opponent_pieces = board.player_pieces(opponent);
-                let protected = board
-                    .reward_pieces
-                    .get(&opponent)
-                    .cloned()
-                    .unwrap_or_default();
+//                 // 找出可吃的棋子（不在保护集中的）
+//                 let capturable: Vec<_> = opponent_pieces
+//                     .iter()
+//                     .filter(|pos| !protected.contains(pos))
+//                     .collect();
 
-                // 找出可吃的棋子（不在保护集中的）
-                let capturable: Vec<_> = opponent_pieces
-                    .iter()
-                    .filter(|pos| !protected.contains(pos))
-                    .collect();
+//                 // 如果当前玩家有吃子任务但无棋子可吃，自动跳过
+//                 if capturable.is_empty() {
+//                     let player = board.current_player;
+//                     let remaining = board.capture_remaining.get(&player).copied().unwrap_or(0);
 
-                // 如果当前玩家有吃子任务但无棋子可吃，自动跳过
-                if capturable.is_empty() {
-                    let player = board.current_player;
-                    let remaining = board.capture_remaining.get(&player).copied().unwrap_or(0);
+//                     if remaining > 0 {
+//                         println!("{} 没有可吃的棋子，自动跳过吃棋阶段", player);
 
-                    if remaining > 0 {
-                        println!("{} 没有可吃的棋子，自动跳过吃棋阶段", player);
+//                         // 清零当前玩家的吃子任务
+//                         *board.capture_remaining.get_mut(&player).unwrap() = 0;
 
-                        // 清零当前玩家的吃子任务
-                        *board.capture_remaining.get_mut(&player).unwrap() = 0;
+//                         // 检查是否所有玩家都完成吃棋
+//                         if board.capture_remaining.values().sum::<u32>() == 0 {
+//                             board.enter_movement_phase();
+//                             continue;
+//                         }
 
-                        // 检查是否所有玩家都完成吃棋
-                        if board.capture_remaining.values().sum::<u32>() == 0 {
-                            board.enter_movement_phase();
-                            continue;
-                        }
+//                         // 切换到下一个玩家
+//                         board.current_player = player.opponent();
+//                         continue;
+//                     }
+//                 }
 
-                        // 切换到下一个玩家
-                        board.current_player = player.opponent();
-                        continue;
-                    }
-                }
+//                 // 正常处理吃棋输入
+//                 let input = read_input(&format!("{} 请输入吃子位置: ", board.current_player));
 
-                // 正常处理吃棋输入
-                let input = read_input(&format!("{} 请输入吃子位置: ", board.current_player));
+//                 match parse_coord(&input) {
+//                     Ok((row, col)) => match board.capture_piece(row, col) {
+//                         Ok(_) => println!("吃棋成功!"),
+//                         Err(e) => println!("操作失败: {}", e),
+//                     },
+//                     Err(e) => println!("输入错误: {}", e),
+//                 }
+//             }
 
-                match parse_coord(&input) {
-                    Ok((row, col)) => match board.capture_piece(row, col) {
-                        Ok(_) => println!("吃棋成功!"),
-                        Err(e) => println!("操作失败: {}", e),
-                    },
-                    Err(e) => println!("输入错误: {}", e),
-                }
-            }
+//             GamePhase::Movement => {
+//                 let input = read_input(&format!(
+//                     "{} 请输入移动指令 (原位置 目标位置): ",
+//                     board.current_player
+//                 ));
 
-            GamePhase::Movement => {
-                let input = read_input(&format!(
-                    "{} 请输入移动指令 (原位置 目标位置): ",
-                    board.current_player
-                ));
+//                 match parse_move(&input) {
+//                     Ok((from, to)) => match board.move_piece(from, to) {
+//                         Ok(captured) => {
+//                             if captured > 0 {
+//                                 println!("移动成功! 吃掉对方 {} 个棋子", captured);
+//                             } else {
+//                                 println!("移动成功!");
+//                             }
+//                         }
+//                         Err(e) => println!("操作失败: {}", e),
+//                     },
+//                     Err(e) => println!("输入错误: {}", e),
+//                 }
+//             }
+//         }
+//     }
 
-                match parse_move(&input) {
-                    Ok((from, to)) => match board.move_piece(from, to) {
-                        Ok(captured) => {
-                            if captured > 0 {
-                                println!("移动成功! 吃掉对方 {} 个棋子", captured);
-                            } else {
-                                println!("移动成功!");
-                            }
-                        }
-                        Err(e) => println!("操作失败: {}", e),
-                    },
-                    Err(e) => println!("输入错误: {}", e),
-                }
-            }
-        }
-    }
+//     // 保存棋谱选项
+//     let save = read_input("是否保存棋谱? (y/n): ");
+//     if save.to_lowercase() == "y" {
+//         let serialized = serde_json::to_string_pretty(board.get_game_record()).unwrap();
+//         let filename = "wudao_game_record.json";
+//         std::fs::write(filename, &serialized).unwrap();
+//         println!("棋谱已保存到 {}", filename);
+//     }
 
-    // 保存棋谱选项
-    let save = read_input("是否保存棋谱? (y/n): ");
-    if save.to_lowercase() == "y" {
-        let serialized = serde_json::to_string_pretty(board.get_game_record()).unwrap();
-        let filename = "wudao_game_record.json";
-        std::fs::write(filename, &serialized).unwrap();
-        println!("棋谱已保存到 {}", filename);
-    }
+//     println!("\n感谢游玩五道方游戏！");
+// }
 
-    println!("\n感谢游玩五道方游戏！");
+
+use eframe::egui::{self, ViewportBuilder};
+use eframe::egui::{FontData, FontDefinitions, FontFamily};
+fn main() -> eframe::Result<()> {
+
+    let options = eframe::NativeOptions {
+        viewport: ViewportBuilder::default().with_inner_size([800.0, 600.0]),
+        ..Default::default()
+    };
+    
+eframe::run_native(
+        "五道方游戏",
+        options,
+        Box::new(|cc| {
+            // 设置中文字体
+            let mut fonts = FontDefinitions::default();
+            
+            // 使用系统字体或回退字体
+            fonts.font_data.insert(
+                "chinese".to_owned(),
+                FontData::from_static(include_bytes!("../assets/fonts/NotoSansSC.ttf")), // 替换为您的中文字体路径
+            );
+            
+            // 或者使用默认字体并添加中文字符支持
+            fonts
+                .families
+                .get_mut(&FontFamily::Proportional)
+                .unwrap()
+                .insert(0, "chinese".to_owned());
+                
+            fonts
+                .families
+                .get_mut(&FontFamily::Monospace)
+                .unwrap()
+                .push("chinese".to_owned());
+                
+            cc.egui_ctx.set_fonts(fonts);
+            
+            Box::new(WudaoApp::new())
+        }),
+    )
 }
 
-// 无侵入性的AI推荐器
-pub struct BoardAI;
+struct WudaoApp {
+    board: Board,
+    selected_cell: Option<(usize, usize)>,
+    message: String,
+    game_over: bool,
+    show_help: bool,
+    input_mode: InputMode,
+}
 
-impl BoardAI {
-    // 主推荐函数
-    pub fn recommend_move(board: &Board) -> String {
-        // 根据游戏阶段选择不同的推荐策略
-        match board.phase {
-            GamePhase::Placement => Self::recommend_placement(board),
-            GamePhase::Capture => Self::recommend_capture(board),
-            GamePhase::Movement => Self::recommend_movement(board),
+#[derive(PartialEq)]
+enum InputMode {
+    Placement,
+    Capture,
+    MovementFrom,
+    MovementTo,
+}
+
+impl WudaoApp {
+    fn new() -> Self {
+        Self {
+            board: Board::new(),
+            selected_cell: None,
+            message: String::new(),
+            game_over: false,
+            show_help: true,
+            input_mode: InputMode::Placement,
         }
     }
-
-    // 落子阶段推荐
-    fn recommend_placement(board: &Board) -> String {
-        let mut best_score = i32::MIN;
-        let mut best_pos = (0, 0);
-
-        for r in 0..5 {
-            for c in 0..5 {
-                if board.grid[r][c] == Cell::Empty {
-                    // 评估这个落子位置
-                    let score = Self::evaluate_placement(board, (r, c));
-
-                    if score > best_score {
-                        best_score = score;
-                        best_pos = (r, c);
+    
+    fn handle_cell_click(&mut self, row: usize, col: usize) {
+    let (phase, player) = self.board.get_state();
+    
+    match phase {
+        GamePhase::Placement => {
+            match self.board.place_piece(row, col) {
+                Ok(extra) => {
+                    self.message = format!("在({},{})落子", row, col);
+                    if extra > 0 {
+                        self.message += &format!("，获得额外落子次数: {}", extra);
+                    }
+                }
+                Err(e) => {
+                    self.message = format!("落子失败: {}", e);
+                }
+            }
+        }
+        GamePhase::Capture => {
+            match self.board.capture_piece(row, col) {
+                Ok(_) => {
+                    self.message = format!("在({},{})吃子成功", row, col);
+                }
+                Err(e) => {
+                    self.message = format!("吃子失败: {}", e);
+                }
+            }
+        }
+        GamePhase::Movement => {
+            if self.input_mode == InputMode::MovementFrom {
+                // 选择要移动的棋子
+                if let Cell::Occupied(p) = self.board.grid[row][col] {
+                    if p == player {
+                        self.selected_cell = Some((row, col));
+                        self.input_mode = InputMode::MovementTo;
+                        self.message = format!("已选择棋子({},{})，请选择目标位置", row, col);
+                    } else {
+                        self.message = "只能选择自己的棋子".to_string();
+                    }
+                } else {
+                    self.message = "请选择有棋子的位置".to_string();
+                }
+            } else if self.input_mode == InputMode::MovementTo {
+                // 选择目标位置
+                if let Some(from) = self.selected_cell {
+                    if from == (row, col) {
+                        self.message = "不能移动到同一位置".to_string();
+                        return;
+                    }
+                    
+                    match self.board.move_piece(from, (row, col)) {
+                        Ok(captured) => {
+                            if captured > 0 {
+                                self.message = format!("从({},{})移动到({},{})成功! 吃掉对方 {} 个棋子", 
+                                    from.0, from.1, row, col, captured);
+                            } else {
+                                self.message = format!("从({},{})移动到({},{})成功!", 
+                                    from.0, from.1, row, col);
+                            }
+                            self.selected_cell = None;
+                            self.input_mode = InputMode::MovementFrom;
+                        }
+                        Err(e) => {
+                            self.message = format!("移动失败: {}", e);
+                            self.selected_cell = None;
+                            self.input_mode = InputMode::MovementFrom;
+                        }
                     }
                 }
             }
         }
-
-        format!("推荐落子位置: {},{}", best_pos.0, best_pos.1)
     }
-
-    // 评估落子位置
-    fn evaluate_placement(board: &Board, pos: (usize, usize)) -> i32 {
-        let player = board.current_player;
-        let mut score = 0;
-
-        // 1. 基础价值：落子本身的价值
-        score += 10;
-
-        // 2. 奖励模式潜力
-        score += Self::reward_potential(board, pos, player);
-
-        // 3. 位置价值：中心位置更有价值
-        score += Self::position_value(board, pos, player);
-
-        // 4. 威胁评估：防止对手形成奖励
-        score -= Self::threat_assessment(board, pos, player) * 50;
-
-        score
+    
+    // 检查游戏是否结束
+    if let Some(winner) = self.board.check_winner() {
+        self.message = format!("游戏结束! {} 获胜!", winner);
+        self.game_over = true;
     }
-
-    // 吃棋阶段推荐
-    fn recommend_capture(board: &Board) -> String {
-        let player = board.current_player;
-        let opponent = player.opponent();
-        let protected = board
-            .reward_pieces
-            .get(&opponent)
-            .cloned()
-            .unwrap_or_default();
-        let mut best_score = i32::MIN;
-        let mut best_pos = (0, 0);
-
-        for r in 0..5 {
-            for c in 0..5 {
-                if let Cell::Occupied(p) = board.grid[r][c] {
-                    if p == opponent && !protected.contains(&(r, c)) {
-                        // 评估吃这个棋子的价值
-                        let score = Self::evaluate_capture(board, (r, c));
-
-                        if score > best_score {
-                            best_score = score;
-                            best_pos = (r, c);
-                        }
-                    }
+    
+    // 更新输入模式
+    let (new_phase, _) = self.board.get_state();
+    if new_phase != phase {
+        match new_phase {
+            GamePhase::Placement => self.input_mode = InputMode::Placement,
+            GamePhase::Capture => self.input_mode = InputMode::Capture,
+            GamePhase::Movement => {
+                self.input_mode = InputMode::MovementFrom;
+                self.selected_cell = None;
+            },
+        }
+        self.message = format!("进入{}", new_phase);
+    }
+}
+    
+  fn draw_board(&mut self, ui: &mut egui::Ui) {
+    let cell_size = 40.0;
+    let padding = cell_size / 2.0; // 添加边距，确保边界上的棋子完整显示
+    let board_size = cell_size * 4.0 + padding * 2.0; // 4个间隔，5个交叉点，加上边距
+    
+    // 创建棋盘画布
+    let (response, painter) = ui.allocate_painter(
+        egui::vec2(board_size, board_size),
+        egui::Sense::click()
+    );
+    
+    // 绘制棋盘背景
+    let rect = response.rect;
+    painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(210, 180, 140));
+    
+    // 绘制网格线 - 5x5交叉点需要4x4的网格
+    for i in 0..5 {
+        let x = rect.left() + padding + i as f32 * cell_size;
+        painter.line_segment(
+            [egui::pos2(x, rect.top() + padding), egui::pos2(x, rect.bottom() - padding)],
+            egui::Stroke::new(1.0, egui::Color32::BLACK)
+        );
+        
+        let y = rect.top() + padding + i as f32 * cell_size;
+        painter.line_segment(
+            [egui::pos2(rect.left() + padding, y), egui::pos2(rect.right() - padding, y)],
+            egui::Stroke::new(1.0, egui::Color32::BLACK)
+        );
+    }
+    
+    // 绘制坐标
+    for i in 0..5 {
+        let x = rect.left() + padding + i as f32 * cell_size;
+        painter.text(
+            egui::pos2(x, rect.top() + padding - 15.0),
+            egui::Align2::CENTER_CENTER,
+            &i.to_string(),
+            egui::FontId::default(),
+            egui::Color32::BLACK
+        );
+        
+        let y = rect.top() + padding + i as f32 * cell_size;
+        painter.text(
+            egui::pos2(rect.left() + padding - 15.0, y),
+            egui::Align2::CENTER_CENTER,
+            &i.to_string(),
+            egui::FontId::default(),
+            egui::Color32::BLACK
+        );
+    }
+    
+    // 绘制棋子 - 放在交叉点上
+    for row in 0..5 {
+        for col in 0..5 {
+            let x = rect.left() + padding + col as f32 * cell_size;
+            let y = rect.top() + padding + row as f32 * cell_size;
+            let center = egui::pos2(x, y);
+            
+            match self.board.grid[row][col] {
+                Cell::Occupied(Player::Black) => {
+                    painter.circle_filled(center, cell_size / 3.0, egui::Color32::BLACK);
                 }
+                Cell::Occupied(Player::White) => {
+                    painter.circle_filled(center, cell_size / 3.0, egui::Color32::WHITE);
+                    painter.circle_stroke(center, cell_size / 3.0, egui::Stroke::new(1.0, egui::Color32::BLACK));
+                }
+                Cell::Empty => {}
+            }
+            
+            // 高亮显示受保护的棋子
+            let is_protected = if let Cell::Occupied(player) = self.board.grid[row][col] {
+                self.board.reward_pieces
+                    .get(&player)
+                    .map_or(false, |protected| protected.contains(&(row, col)))
+            } else {
+                false
+            };
+            
+            if is_protected {
+                painter.circle_stroke(center, cell_size / 2.8, egui::Stroke::new(2.0, egui::Color32::GOLD));
+            }
+            
+            // 高亮显示选中的棋子
+            if self.selected_cell == Some((row, col)) {
+                painter.circle_stroke(center, cell_size / 2.8, egui::Stroke::new(2.0, egui::Color32::BLUE));
             }
         }
-
-        format!("推荐吃子位置: {},{}", best_pos.0, best_pos.1)
     }
-
-    // 评估吃子位置
-    fn evaluate_capture(board: &Board, pos: (usize, usize)) -> i32 {
-        let mut score = 10; // 基本吃子价值
-
-        // 中心位置价值更高
-        if pos.0 == 2 && pos.1 == 2 {
-            score += 5;
+    
+    // 处理点击事件 - 点击交叉点
+    if response.clicked() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            // 计算点击的交叉点坐标
+            let col = ((pos.x - rect.left() - padding + cell_size / 2.0) / cell_size) as usize;
+            let row = ((pos.y - rect.top() - padding + cell_size / 2.0) / cell_size) as usize;
+            
+            if row < 5 && col < 5 {
+                // 添加点击反馈
+                self.message = format!("点击位置: ({}, {})", row, col);
+                self.handle_cell_click(row, col);
+            }
         }
-
-        // 破坏对手潜在模式
-        if Self::is_potential_reward_piece(board, pos) {
-            score += 15;
-        }
-
-        score
     }
+}
+}
 
-    // 走棋阶段推荐
-    fn recommend_movement(board: &Board) -> String {
-        let player = board.current_player;
-        let mut best_score = i32::MIN;
-        let mut best_move = ((0, 0), (0, 0));
-
-        // 使用蒙特卡洛树搜索
-        let time_limit = Duration::from_secs(1);
-        if let Some((from, to)) = Self::monte_carlo_search(board, time_limit) {
-            best_move = (from, to);
-        }
-
-        format!(
-            "推荐移动: {},{} 移动到 {},{}",
-            best_move.0.0, best_move.0.1, best_move.1.0, best_move.1.1
-        )
-    }
-
-    // 蒙特卡洛树搜索
-    fn monte_carlo_search(
-        board: &Board,
-        time_limit: Duration,
-    ) -> Option<((usize, usize), (usize, usize))> {
-        let start_time = Instant::now();
-        let mut best_move = None;
-        let mut best_score = i32::MIN;
-
-        // 获取所有可能的移动
-        let moves = Self::generate_possible_moves(board);
-
-        // 并行评估移动
-        let moves_ref = Arc::new(Mutex::new((best_move, best_score)));
-        let board_clone = board.clone();
-
-        thread::scope(|s| {
-            for mv in moves {
-                let moves_ref = Arc::clone(&moves_ref);
-                let board_clone = board_clone.clone();
-
-                s.spawn(move || {
-                    let mut total_score = 0;
-                    let mut simulations = 0;
-
-                    // 在时间限制内进行模拟
-                    while start_time.elapsed() < time_limit {
-                        let mut sim_board = board_clone.clone();
-                        if sim_board.move_piece(mv.0, mv.1).is_ok() {
-                            // 模拟随机游戏
-                            let score = Self::simulate_random_game(&sim_board);
-                            total_score += score;
-                            simulations += 1;
-                        }
-                    }
-
-                    if simulations > 0 {
-                        let avg_score = total_score / simulations;
-
-                        let mut lock = moves_ref.lock().unwrap();
-                        if avg_score > lock.1 {
-                            lock.1 = avg_score;
-                            lock.0 = Some(mv);
-                        }
-                    }
+impl eframe::App for WudaoApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.heading("五道方游戏");
+            
+            // 帮助提示
+            if self.show_help {
+                ui.collapsing("游戏规则", |ui| {
+                    ui.label("1. 游戏分为三个阶段: 落子阶段、吃棋阶段、走子阶段");
+                    ui.label("2. 落子阶段: 玩家轮流在5x5棋盘上放置棋子");
+                    ui.label("3. 形成特定模式可获得奖励: 成方(+1子)、成三斜(+1子)、成四斜(+1子)、成州(+2子)、成龙(+2子)");
+                    ui.label("4. 棋盘满后进入吃棋阶段: 后落子的玩家先吃棋，轮流吃掉对方棋子");
+                    ui.label("5. 吃棋完成后进入走子阶段: 玩家轮流移动自己的棋子");
+                    ui.label("6. 胜利条件: 对方棋子少于3个或无法移动时获胜");
                 });
             }
+            
+            // 游戏状态显示
+            let (phase, player) = self.board.get_state();
+            ui.horizontal(|ui| {
+                ui.label(format!("当前阶段: {}", phase));
+                ui.label(format!("当前玩家: {}", player));
+                
+                if ui.button("隐藏/显示帮助").clicked() {
+                    self.show_help = !self.show_help;
+                }
+                
+                if ui.button("认输").clicked() {
+                    self.message = format!("{} 认输，游戏结束！", player);
+                    self.game_over = true;
+                }
+                
+                if ui.button("新游戏").clicked() {
+                    *self = Self::new();
+                }
+            });
+            
+            // 显示额外的游戏状态信息
+            if let GamePhase::Placement = phase {
+                if self.board.extra_moves > 0 {
+                    ui.label(format!("额外落子次数: {}", self.board.extra_moves));
+                }
+            } else if let GamePhase::Capture = phase {
+                let remaining = self.board.capture_remaining
+                    .get(&player)
+                    .copied()
+                    .unwrap_or(0);
+                ui.label(format!("剩余吃子数量: {}", remaining));
+            } else if let GamePhase::Movement = phase {
+             // 修复模式匹配
+                if self.input_mode == InputMode::MovementFrom {
+                    ui.label("请选择要移动的棋子");
+                } else if self.input_mode == InputMode::MovementTo {
+                    ui.label("请选择目标位置");
+                }
+            }
+            
+            // 显示消息
+            if !self.message.is_empty() {
+                ui.label(&self.message);
+            }
+            
+            // 检查游戏是否结束
+            if self.game_over {
+                ui.heading("游戏结束!");
+                return;
+            }
+            
+            // 显示棋盘
+            ui.vertical_centered(|ui| {
+                self.draw_board(ui);
+            });
         });
-
-        let lock = moves_ref.lock().unwrap();
-        lock.0
-    }
-
-    // 生成所有可能的移动
-    fn generate_possible_moves(board: &Board) -> Vec<((usize, usize), (usize, usize))> {
-        let player = board.current_player;
-        let mut moves = Vec::new();
-
-        for (r, c) in board.player_pieces(player) {
-            // 检查四个方向
-            let neighbors = [
-                (r.wrapping_sub(1), c),
-                (r + 1, c),
-                (r, c.wrapping_sub(1)),
-                (r, c + 1),
-            ];
-
-            for (nr, nc) in neighbors {
-                if Board::is_valid_pos(nr, nc) && board.grid[nr][nc] == Cell::Empty {
-                    moves.push(((r, c), (nr, nc)));
-                }
-            }
-        }
-
-        moves
-    }
-
-    // 模拟随机游戏
-    fn simulate_random_game(board: &Board) -> i32 {
-        let mut sim_board = board.clone();
-        let original_player = sim_board.current_player;
-        let mut depth = 0;
-        let max_depth = 20;
-
-        while depth < max_depth {
-            if let Some(winner) = sim_board.check_winner() {
-                return if winner == original_player { 100 } else { -100 };
-            }
-
-            // 根据游戏阶段选择随机动作
-            match sim_board.phase {
-                GamePhase::Placement => {
-                    let empty_cells: Vec<_> = (0..5)
-                        .flat_map(|r| (0..5).map(move |c| (r, c)))
-                        .filter(|&(r, c)| sim_board.grid[r][c] == Cell::Empty)
-                        .collect();
-
-                    if let Some(&(r, c)) = empty_cells.choose(&mut thread_rng()) {
-                        let _ = sim_board.place_piece(r, c);
-                    }
-                }
-                GamePhase::Capture => {
-                    let opponent = sim_board.current_player.opponent();
-                    let protected = sim_board
-                        .reward_pieces
-                        .get(&opponent)
-                        .cloned()
-                        .unwrap_or_default();
-
-                    let capturable: Vec<_> = sim_board
-                        .player_pieces(opponent)
-                        .into_iter()
-                        .filter(|pos| !protected.contains(pos))
-                        .collect();
-
-                    if let Some(&(r, c)) = capturable.choose(&mut thread_rng()) {
-                        let _ = sim_board.capture_piece(r, c);
-                    }
-                }
-                GamePhase::Movement => {
-                    let moves = Self::generate_possible_moves(&sim_board);
-                    if let Some(&(from, to)) = moves.choose(&mut thread_rng()) {
-                        let _ = sim_board.move_piece(from, to);
-                    }
-                }
-            }
-
-            depth += 1;
-        }
-
-        // 评估最终局势
-        Self::evaluate_position(&sim_board, original_player)
-    }
-
-    // 评估局势
-    fn evaluate_position(board: &Board, player: Player) -> i32 {
-        let opponent = player.opponent();
-
-        // 1. 棋子数量差异
-        let player_pieces = board.player_pieces(player).len() as i32;
-        let opponent_pieces = board.player_pieces(opponent).len() as i32;
-        let mut score = (player_pieces - opponent_pieces) * 10;
-
-        // 2. 奖励模式价值
-        score += Self::count_rewards(board, player) * 50;
-        score -= Self::count_rewards(board, opponent) * 50;
-
-        // 3. 保护棋子价值
-        score += Self::count_protected(board, player) * 5;
-        score -= Self::count_protected(board, opponent) * 5;
-
-        // 4. 位置控制价值
-        score += Self::position_control_value(board, player);
-
-        score
-    }
-
-    // 计算奖励模式数量
-    fn count_rewards(board: &Board, player: Player) -> i32 {
-        let mut count = 0;
-
-        // 成方
-        for r in 0..4 {
-            for c in 0..4 {
-                if board.is_square(r, c, player) {
-                    count += 1;
-                }
-            }
-        }
-
-        // 成三斜
-        for id in 0..4 {
-            if board.is_tri(id, player) {
-                count += 1;
-            }
-        }
-
-        // 成四斜
-        for id in 0..4 {
-            if board.is_tetra(id, player) {
-                count += 1;
-            }
-        }
-
-        // 成州
-        for r in 0..5 {
-            if board.is_row(r, player) {
-                count += 2;
-            }
-        }
-        for c in 0..5 {
-            if board.is_col(c, player) {
-                count += 2;
-            }
-        }
-
-        // 成龙
-        for id in 0..2 {
-            if board.is_dragon(id, player) {
-                count += 2;
-            }
-        }
-
-        count
-    }
-
-    // 计算受保护棋子数量
-    fn count_protected(board: &Board, player: Player) -> i32 {
-        board
-            .reward_pieces
-            .get(&player)
-            .map_or(0, |set| set.len() as i32)
-    }
-
-    // 评估位置控制价值
-    fn position_control_value(board: &Board, player: Player) -> i32 {
-        let mut value = 0;
-        let center_weights = [
-            [1, 2, 3, 2, 1],
-            [2, 4, 6, 4, 2],
-            [3, 6, 9, 6, 3],
-            [2, 4, 6, 4, 2],
-            [1, 2, 3, 2, 1],
-        ];
-
-        for (r, row) in board.grid.iter().enumerate() {
-            for (c, cell) in row.iter().enumerate() {
-                if let Cell::Occupied(p) = cell {
-                    if *p == player {
-                        value += center_weights[r][c];
-                    }
-                }
-            }
-        }
-
-        value
-    }
-
-    // 改进的位置价值评估
-    fn position_value(board: &Board, pos: (usize, usize), player: Player) -> i32 {
-        let (r, c) = pos;
-        let opponent = player.opponent();
-        let mut value = 0;
-
-        // 1. 基础位置权重（考虑棋盘对称性）
-        let position_weights = [
-            [1, 2, 3, 2, 1],
-            [2, 4, 6, 4, 2],
-            [3, 6, 9, 6, 3],
-            [2, 4, 6, 4, 2],
-            [1, 2, 3, 2, 1],
-        ];
-        value += position_weights[r][c];
-
-        // 2. 奖励模式参与度评估
-        value += Self::reward_participation_value(board, pos, player) * 5;
-        value -= Self::reward_participation_value(board, pos, opponent) * 5;
-
-        // 3. 战略位置价值（根据当前局势动态调整）
-        if Self::is_strategic_pivot(board, pos) {
-            value += 8;
-        }
-
-        // 4. 连接性价值（与其他棋子的连接程度）
-        value += Self::connection_value(board, pos, player) * 3;
-
-        value
-    }
-
-    // 评估位置在奖励模式中的参与度
-    fn reward_participation_value(board: &Board, pos: (usize, usize), player: Player) -> i32 {
-        let mut participation = 0;
-
-        // 检查位置可能参与的所有奖励模式
-        participation += Self::square_participation(board, pos, player);
-        participation += Self::diagonal_participation(board, pos, player);
-        participation += Self::row_col_participation(board, pos, player);
-
-        participation
-    }
-
-    // 检查位置在成方模式中的参与度
-    fn square_participation(board: &Board, pos: (usize, usize), player: Player) -> i32 {
-        let (r, c) = pos;
-        let mut participation = 0;
-
-        // 检查可能包含该位置的所有1x1正方形
-        for top_r in r.saturating_sub(1)..=r {
-            for left_c in c.saturating_sub(1)..=c {
-                if top_r < 4 && left_c < 4 {
-                    let positions = [
-                        (top_r, left_c),
-                        (top_r, left_c + 1),
-                        (top_r + 1, left_c),
-                        (top_r + 1, left_c + 1),
-                    ];
-
-                    // 计算玩家在这个正方形中的棋子数量
-                    let player_count = positions
-                        .iter()
-                        .filter(
-                            |&&(r, c)| matches!(board.grid[r][c], Cell::Occupied(p) if p == player),
-                        )
-                        .count() as i32;
-
-                    // 计算空位数量
-                    let empty_count = positions
-                        .iter()
-                        .filter(|&&(r, c)| board.grid[r][c] == Cell::Empty)
-                        .count() as i32;
-
-                    // 如果位置在正方形中且模式未完成
-                    if positions.contains(&pos) && player_count < 4 {
-                        participation += player_count + empty_count;
-                    }
-                }
-            }
-        }
-
-        participation
-    }
-
-    // 检查位置在斜线模式中的参与度
-    fn diagonal_participation(board: &Board, pos: (usize, usize), player: Player) -> i32 {
-        let mut participation = 0;
-
-        // 所有可能的斜线模式
-        let diagonals = [
-            // 成三斜
-            vec![(0, 2), (1, 1), (2, 0)],
-            vec![(0, 2), (1, 3), (2, 4)],
-            vec![(2, 0), (3, 1), (4, 2)],
-            vec![(2, 4), (3, 3), (4, 2)],
-            // 成四斜
-            vec![(0, 1), (1, 2), (2, 3), (3, 4)],
-            vec![(0, 3), (1, 2), (2, 1), (3, 0)],
-            vec![(1, 0), (2, 1), (3, 2), (4, 3)],
-            vec![(1, 4), (2, 3), (3, 2), (4, 1)],
-            // 成龙
-            vec![(0, 0), (1, 1), (2, 2), (3, 3), (4, 4)],
-            vec![(0, 4), (1, 3), (2, 2), (3, 1), (4, 0)],
-        ];
-
-        for pattern in diagonals {
-            if pattern.contains(&pos) {
-                let player_count = pattern
-                    .iter()
-                    .filter(|&&(r, c)| matches!(board.grid[r][c], Cell::Occupied(p) if p == player))
-                    .count() as i32;
-
-                let empty_count = pattern
-                    .iter()
-                    .filter(|&&(r, c)| board.grid[r][c] == Cell::Empty)
-                    .count() as i32;
-
-                participation += player_count + empty_count;
-            }
-        }
-
-        participation
-    }
-
-    // 检查位置在行/列模式中的参与度
-    fn row_col_participation(board: &Board, pos: (usize, usize), player: Player) -> i32 {
-        let (r, c) = pos;
-        let mut participation = 0;
-
-        // 检查所在行
-        let row_player_count = (0..5)
-            .filter(|&col| matches!(board.grid[r][col], Cell::Occupied(p) if p == player))
-            .count() as i32;
-
-        let row_empty_count = (0..5)
-            .filter(|&col| board.grid[r][col] == Cell::Empty)
-            .count() as i32;
-
-        // 检查所在列
-        let col_player_count = (0..5)
-            .filter(|&row| matches!(board.grid[row][c], Cell::Occupied(p) if p == player))
-            .count() as i32;
-
-        let col_empty_count = (0..5)
-            .filter(|&row| board.grid[row][c] == Cell::Empty)
-            .count() as i32;
-
-        participation += row_player_count + row_empty_count;
-        participation += col_player_count + col_empty_count;
-
-        participation
-    }
-
-    // 判断是否是战略支点位置
-    fn is_strategic_pivot(board: &Board, pos: (usize, usize)) -> bool {
-        let (r, c) = pos;
-
-        // 1. 中心位置总是重要的
-        if r == 2 && c == 2 {
-            return true;
-        }
-
-        // 2. 检查是否连接多个奖励模式
-        let connected_patterns = Self::count_connected_patterns(board, pos);
-        if connected_patterns >= 2 {
-            return true;
-        }
-
-        // 3. 检查是否在敌我争夺区域
-        Self::is_contested_area(board, pos)
-    }
-
-    // 计算位置连接的奖励模式数量
-    fn count_connected_patterns(board: &Board, pos: (usize, usize)) -> i32 {
-        let mut count = 0;
-
-        // 检查所有可能包含此位置的模式
-        count += Self::count_squares_containing(board, pos);
-        count += Self::count_diagonals_containing(board, pos);
-
-        // 行和列各算一种
-        count += 2;
-
-        count
-    }
-
-    // 计算包含位置的成方数量
-    fn count_squares_containing(board: &Board, pos: (usize, usize)) -> i32 {
-        let (r, c) = pos;
-        let mut count = 0;
-
-        for top_r in r.saturating_sub(1)..=r {
-            for left_c in c.saturating_sub(1)..=c {
-                if top_r < 4 && left_c < 4 {
-                    let square = [
-                        (top_r, left_c),
-                        (top_r, left_c + 1),
-                        (top_r + 1, left_c),
-                        (top_r + 1, left_c + 1),
-                    ];
-
-                    if square.contains(&pos) {
-                        count += 1;
-                    }
-                }
-            }
-        }
-
-        count
-    }
-
-    // 计算包含位置的斜线模式数量
-    fn count_diagonals_containing(board: &Board, pos: (usize, usize)) -> i32 {
-        let diagonals = [
-            // 成三斜
-            vec![(0, 2), (1, 1), (2, 0)],
-            vec![(0, 2), (1, 3), (2, 4)],
-            vec![(2, 0), (3, 1), (4, 2)],
-            vec![(2, 4), (3, 3), (4, 2)],
-            // 成四斜
-            vec![(0, 1), (1, 2), (2, 3), (3, 4)],
-            vec![(0, 3), (1, 2), (2, 1), (3, 0)],
-            vec![(1, 0), (2, 1), (3, 2), (4, 3)],
-            vec![(1, 4), (2, 3), (3, 2), (4, 1)],
-            // 成龙
-            vec![(0, 0), (1, 1), (2, 2), (3, 3), (4, 4)],
-            vec![(0, 4), (1, 3), (2, 2), (3, 1), (4, 0)],
-        ];
-
-        diagonals
-            .iter()
-            .filter(|pattern| pattern.contains(&pos))
-            .count() as i32
-    }
-
-    // 判断是否是敌我争夺区域
-    fn is_contested_area(board: &Board, pos: (usize, usize)) -> bool {
-        let (r, c) = pos;
-        let player = board.current_player;
-        let opponent = player.opponent();
-
-        // 检查2x2区域内的棋子分布
-        let mut player_count = 0;
-        let mut opponent_count = 0;
-
-        for dr in 0..=1 {
-            for dc in 0..=1 {
-                let nr = r + dr;
-                let nc = c + dc;
-
-                if nr < 5 && nc < 5 {
-                    match board.grid[nr][nc] {
-                        Cell::Occupied(p) if p == player => player_count += 1,
-                        Cell::Occupied(p) if p == opponent => opponent_count += 1,
-                        _ => {}
-                    }
-                }
-            }
-        }
-
-        // 如果双方都有棋子存在，则是争夺区域
-        player_count > 0 && opponent_count > 0
-    }
-
-    // 评估位置与其他棋子的连接性
-    fn connection_value(board: &Board, pos: (usize, usize), player: Player) -> i32 {
-        let (r, c) = pos;
-        let mut connections = 0;
-
-        // 检查四个方向
-        let directions = [(0, 1), (1, 0), (0, -1), (-1, 0)];
-
-        for (dr, dc) in directions {
-            let mut nr = r as i32 + dr;
-            let mut nc = c as i32 + dc;
-            let mut found_player = false;
-            let mut found_opponent = false;
-
-            // 沿方向寻找玩家棋子
-            while nr >= 0 && nr < 5 && nc >= 0 && nc < 5 {
-                match board.grid[nr as usize][nc as usize] {
-                    Cell::Occupied(p) if p == player => {
-                        found_player = true;
-                        break;
-                    }
-                    Cell::Occupied(p) if p == player.opponent() => {
-                        found_opponent = true;
-                        break;
-                    }
-                    _ => {}
-                }
-
-                nr += dr;
-                nc += dc;
-            }
-
-            if found_player {
-                connections += 1;
-            } else if !found_opponent {
-                // 如果方向没有对手棋子，增加潜在连接价值
-                connections += 1;
-            }
-        }
-
-        connections
-    }
-
-    // 改进的威胁评估
-    fn threat_assessment(board: &Board, pos: (usize, usize), player: Player) -> i32 {
-        let opponent = player.opponent();
-        let mut threats = 0;
-
-        // 1. 直接威胁（对手可能立即形成的奖励）
-        threats += Self::immediate_threats(board, pos, opponent) * 3;
-
-        // 2. 潜在威胁（对手可能在未来形成的奖励）
-        threats += Self::potential_threats(board, pos, opponent);
-
-        // 3. 位置控制威胁（对手可能利用此位置）
-        threats += Self::positional_threats(board, pos, opponent);
-
-        threats
-    }
-
-    // 评估直接威胁
-    fn immediate_threats(board: &Board, pos: (usize, usize), opponent: Player) -> i32 {
-        let mut threats = 0;
-
-        // 检查所有包含此位置的模式
-        threats += Self::square_threats(board, pos, opponent);
-        threats += Self::diagonal_threats(board, pos, opponent);
-        threats += Self::row_col_threats(board, pos, opponent);
-
-        threats
-    }
-
-    // 评估成方威胁
-    fn square_threats(board: &Board, pos: (usize, usize), opponent: Player) -> i32 {
-        let (r, c) = pos;
-        let mut threats = 0;
-
-        for top_r in r.saturating_sub(1)..=r {
-            for left_c in c.saturating_sub(1)..=c {
-                if top_r < 4 && left_c < 4 {
-                    let square = [
-                        (top_r, left_c),
-                        (top_r, left_c + 1),
-                        (top_r + 1, left_c),
-                        (top_r + 1, left_c + 1),
-                    ];
-
-                    if square.contains(&pos) {
-                        let opponent_count = square.iter()
-                            .filter(|&&(r, c)| {
-                                matches!(board.grid[r][c], Cell::Occupied(p) if p == opponent)
-                            })
-                            .count() as i32;
-
-                        let empty_count = square
-                            .iter()
-                            .filter(|&&(r, c)| board.grid[r][c] == Cell::Empty)
-                            .count() as i32;
-
-                        // 如果对手差一个棋子就能形成成方
-                        if opponent_count == 3 && empty_count == 1 {
-                            threats += 1;
-                        }
-                    }
-                }
-            }
-        }
-
-        threats
-    }
-
-    // 评估斜线威胁
-    fn diagonal_threats(board: &Board, pos: (usize, usize), opponent: Player) -> i32 {
-        let diagonals = [
-            // 成三斜
-            vec![(0, 2), (1, 1), (2, 0)],
-            vec![(0, 2), (1, 3), (2, 4)],
-            vec![(2, 0), (3, 1), (4, 2)],
-            vec![(2, 4), (3, 3), (4, 2)],
-            // 成四斜
-            vec![(0, 1), (1, 2), (2, 3), (3, 4)],
-            vec![(0, 3), (1, 2), (2, 1), (3, 0)],
-            vec![(1, 0), (2, 1), (3, 2), (4, 3)],
-            vec![(1, 4), (2, 3), (3, 2), (4, 1)],
-            // 成龙
-            vec![(0, 0), (1, 1), (2, 2), (3, 3), (4, 4)],
-            vec![(0, 4), (1, 3), (2, 2), (3, 1), (4, 0)],
-        ];
-
-        let mut threats = 0;
-
-        for pattern in diagonals {
-            if pattern.contains(&pos) {
-                let opponent_count = pattern
-                    .iter()
-                    .filter(
-                        |&&(r, c)| matches!(board.grid[r][c], Cell::Occupied(p) if p == opponent),
-                    )
-                    .count() as i32;
-
-                let empty_count = pattern
-                    .iter()
-                    .filter(|&&(r, c)| board.grid[r][c] == Cell::Empty)
-                    .count() as i32;
-
-                // 威胁程度取决于模式大小和完成度
-                let pattern_size = pattern.len() as i32;
-                if opponent_count >= pattern_size - 1 && empty_count <= 1 {
-                    threats += pattern_size; // 更大的模式威胁更大
-                }
-            }
-        }
-
-        threats
-    }
-
-    // 评估行列威胁
-    fn row_col_threats(board: &Board, pos: (usize, usize), opponent: Player) -> i32 {
-        let (r, c) = pos;
-        let mut threats = 0;
-
-        // 检查行威胁
-        let row_opponent_count = (0..5)
-            .filter(|&col| matches!(board.grid[r][col], Cell::Occupied(p) if p == opponent))
-            .count() as i32;
-
-        // 检查列威胁
-        let col_opponent_count = (0..5)
-            .filter(|&row| matches!(board.grid[row][c], Cell::Occupied(p) if p == opponent))
-            .count() as i32;
-
-        // 如果一行/列中对手有3个或更多棋子，存在威胁
-        if row_opponent_count >= 3 {
-            threats += row_opponent_count;
-        }
-
-        if col_opponent_count >= 3 {
-            threats += col_opponent_count;
-        }
-
-        threats
-    }
-
-    // 评估潜在威胁
-    fn potential_threats(board: &Board, pos: (usize, usize), opponent: Player) -> i32 {
-        // 评估位置对对手的战略价值
-        Self::position_value(board, pos, opponent) / 2
-    }
-
-    // 评估位置控制威胁
-    fn positional_threats(board: &Board, pos: (usize, usize), opponent: Player) -> i32 {
-        let (r, c) = pos;
-        let mut threats = 0;
-
-        // 检查位置是否连接对手的多个棋子
-        let connections = Self::connection_value(board, pos, opponent);
-        threats += connections;
-
-        // 检查位置是否在对手的潜在模式中
-        if Self::reward_participation_value(board, pos, opponent) > 0 {
-            threats += 2;
-        }
-
-        threats
-    }
-
-    //----
-
-    // 评估奖励模式潜力
-    fn reward_potential(board: &Board, pos: (usize, usize), player: Player) -> i32 {
-        let mut potential = 0;
-
-        // 检查成方潜力
-        for &(r, c) in &[
-            (pos.0, pos.1),
-            (pos.0, pos.1.saturating_sub(1)),
-            (pos.0.saturating_sub(1), pos.1),
-            (pos.0.saturating_sub(1), pos.1.saturating_sub(1)),
-        ] {
-            if r < 4 && c < 4 {
-                potential += Self::square_potential(board, r, c, player);
-            }
-        }
-
-        potential
-    }
-
-    // 评估成方潜力
-    fn square_potential(board: &Board, r: usize, c: usize, player: Player) -> i32 {
-        let positions = [(r, c), (r, c + 1), (r + 1, c), (r + 1, c + 1)];
-        let mut player_count = 0;
-        let mut empty_count = 0;
-
-        for (r, c) in positions {
-            match board.grid[r][c] {
-                Cell::Occupied(p) if p == player => player_count += 1,
-                Cell::Empty => empty_count += 1,
-                _ => {}
-            }
-        }
-
-        // 潜力评分：已有棋子越多，潜力越大
-        match player_count {
-            3 if empty_count == 1 => 3, // 差一个成方
-            2 if empty_count == 2 => 1, // 两个棋子
-            _ => 0,
-        }
-    }
-
-    // 检查位置是否是潜在威胁
-    fn is_potential_threat(
-        board: &Board,
-        square: (usize, usize),
-        player: Player,
-        exclude: (usize, usize),
-    ) -> bool {
-        let positions = [
-            (square.0, square.1),
-            (square.0, square.1 + 1),
-            (square.0 + 1, square.1),
-            (square.0 + 1, square.1 + 1),
-        ];
-
-        let mut player_count = 0;
-        let mut empty_count = 0;
-        let mut exclude_count = 0;
-
-        for &(r, c) in &positions {
-            if (r, c) == exclude {
-                exclude_count += 1;
-                continue;
-            }
-
-            match board.grid[r][c] {
-                Cell::Occupied(p) if p == player => player_count += 1,
-                Cell::Empty => empty_count += 1,
-                _ => {}
-            }
-        }
-
-        // 排除位置后，如果已有3个棋子且1个空位，则是威胁
-        player_count == 3 && empty_count == 1 && exclude_count == 0
-    }
-
-    // 判断棋子是否可能参与奖励模式
-    fn is_potential_reward_piece(board: &Board, pos: (usize, usize)) -> bool {
-        let (r, c) = pos;
-
-        // 中心位置更可能参与多个模式
-        if r == 2 && c == 2 {
-            return true;
-        }
-
-        // 检查是否在关键行/列
-        r == 2 || c == 2
     }
 }
